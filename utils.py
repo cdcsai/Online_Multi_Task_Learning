@@ -1,21 +1,13 @@
-from gym.utils import play
-import os
-import gym
-import pygame
-import matplotlib.pyplot as plt
 import numpy as np
-from numpy.random import uniform
-from skimage.measure import block_reduce
-from collections import deque
-from pygame.locals import HWSURFACE, DOUBLEBUF, RESIZABLE, VIDEORESIZE
 
 
-def Fetch_trajectories(agent):
-    pass
+def reinitialize_zero_columns(L):
+    for i in range(L.shape[1]):
+        if np.count_nonzero(L.T[i]) == 0:
+            L.T[i] = np.random.randn(L.shape[0])
+    return L
 
 
-
-
-
-if __name__ == "__main__":
-    pass
+def discounted_r(rewards, gamma=0.01 ):
+    r = list(map(lambda x: x * gamma, rewards))
+    return r
