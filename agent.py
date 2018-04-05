@@ -5,6 +5,7 @@ from gym_extensions.continuous import gym_navigation_2d
 from scipy.optimize import minimize
 from copy import deepcopy
 import copy
+from tqdm import tqdm
 from collections import defaultdict
 
 
@@ -18,17 +19,17 @@ class Agent(object):
         self.env = gym.make("State-Based-Navigation-2d-Map1-Goal1-v0")
         self.render = False
         self.task1, self.task2, self.task3 = self.create_multitask_envs
-        self.n_iter = 2
+        self.n_iter = 10
         self.nb_tasks = 3
         self.discount = 0.9
-        self.sigma = 0.8
-        self.learning_rate = 0.001
+        self.sigma = 3
+        self.learning_rate = 0.01
         self.obs_space_shape = self.env.observation_space.shape[0]
         self.action_space_shape = self.env.action_space.shape[0]
         self.theta1 = np.random.randn(self.obs_space_shape)
         self.theta2 = np.random.randn(self.obs_space_shape)
-        self.nb_episodes = 100
-        self.horizon = 8
+        self.nb_episodes = 600
+        self.horizon = 50
         self.lbda = 0.1
 
     @property
@@ -122,27 +123,16 @@ class Agent(object):
         alpha = np.random.randn(self.obs_space_shape)
         # Theta update
         for episode in paths:
-
-            try:
-                r = np.array([(self.discount ** t) * episode['rewards'][t] for t in range(self.horizon)])
-            except IndexError:
-                r = np.array([(self.discount ** t) * episode['rewards'][t] for t in range(8)])
+            r = np.array([(self.discount ** t) * episode['rewards'][t] for t in range(self.horizon)])
+            print(r)
 
             if x:
-                try:
-                    g = np.array([self.gaussian_grad(episode['actions'][t][0],
+                g = np.array([self.gaussian_grad(episode['actions'][t][0],
                                                  episode['states'][t], alpha) for t in range(self.horizon)])
-                except IndexError:
-                    g = np.array([self.gaussian_grad(episode['actions'][t][0],
-                                                     episode['states'][t], alpha) for t in range(8)])
 
             else:
-                try:
-                    g = np.array([self.gaussian_grad(episode['actions'][t][1],
+                g = np.array([self.gaussian_grad(episode['actions'][t][1],
                                                      episode['states'][t], alpha) for t in range(self.horizon)])
-                except IndexError:
-                    g = np.array([self.gaussian_grad(episode['actions'][t][1],
-                                                     episode['states'][t], alpha) for t in range(8)])
 
             alpha += np.dot(r, g)
             hess = sum([np.outer(episode['states'][t], episode['states'][t].T) for t in range(self.horizon)])
@@ -282,16 +272,16 @@ class Agent(object):
         elif task == 2:
             best_theta1, best_theta2 = T1["task2_x"]["theta1"], T2["task2_y"]["theta2"]
             best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task1, policy=best_pol, horizon=self.horizon,
+            self.collect_episodes(self.task2, policy=best_pol, horizon=self.horizon,
                                   n_episodes=self.nb_episodes, render=True)
 
         else:
             best_theta1, best_theta2 = T1["task3_x"]["theta1"], T2["task3_y"]["theta2"]
             best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task1, policy=best_pol, horizon=self.horizon,
+            self.collect_episodes(self.task3, policy=best_pol, horizon=self.horizon,
                                   n_episodes=self.nb_episodes, render=True)
 
-    def reinforce_wo_pg_ella(self, task=1):
+    def reinforce_wo_pg_ella(self, task=2):
         """
         :param task:
         :return:
