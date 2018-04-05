@@ -3,6 +3,7 @@ from utils import reinitialize_zero_columns, discounted_r, loss, hess_norm
 import gym
 from gym_extensions.continuous import gym_navigation_2d
 from scipy.optimize import minimize
+from copy import deepcopy
 import copy
 from collections import defaultdict
 
@@ -15,9 +16,7 @@ class Agent(object):
     def __init__(self):
 
         self.env = gym.make("State-Based-Navigation-2d-Map1-Goal1-v0")
-        self.task1 = self.create_multitask_envs[0]
-        self.task2 = self.create_multitask_envs[1]
-        self.task3 = self.create_multitask_envs[2]
+        self.task1, self.task2, self.task3 = self.create_multitask_envs
         self.nb_tasks = 3
         self.discount = 0.9
         self.alpha = 0.1
@@ -36,9 +35,13 @@ class Agent(object):
 
     @property
     def create_multitask_envs(self):
-        env1 = self.env.env.destination = np.array([20, 100])
-        env2 = self.env.env.destination = np.array([100, 150])
-        env3 = self.env.env.destination = np.array([500, 500])
+        env1 = deepcopy(self.env)
+        env2 = deepcopy(self.env)
+        env3 = deepcopy(self.env)
+
+        env1.env.destination = np.array([20, 100])
+        env2.env.destination = np.array([100, 150])
+        env3.env.destination = np.array([500, 500])
         return env1, env2, env3
 
     def collect_episodes(self, mdp, policy=None, horizon=None, n_episodes=1):
@@ -66,7 +69,7 @@ class Agent(object):
             # state = state.reshape(-1, 1)
 
             for _ in range(horizon):
-                action = policy.draw_action(state)
+                action = policy.draw_action(state, mdp)
                 next_state, reward, terminal, _ = mdp.step(action)
                 if self.render:
                     mdp.render()
@@ -167,7 +170,7 @@ class Agent(object):
                 alpha = T[str(task)]["alpha"]
 
                 best_pol = Policy(alpha, self.sigma, self.action_space_shape)
-                paths = self.collect_episodes(self.env, policy=best_pol, horizon=self.horizon,
+                paths = self.collect_episodes(task, policy=best_pol, horizon=self.horizon,
                                               n_episodes=self.nb_episodes)
                 A = A - np.kron(np.dot(s, s.T), hess)
                 temp = np.kron(s.T, np.dot(alpha.T, hess))
@@ -178,12 +181,12 @@ class Agent(object):
             L = reinitialize_zero_columns(L)
 
             fun = lambda x: loss(L, x, alpha, hess)
-            s = minimize(fun, s)
-            A = A + np.kron(np.dot(s, s.T), hess)
-            A = (1 / self.horizon) * A
+            s = minimize(fun, s).x
+            A = A + np.kron(np.outer(s, s.T), hess)
+            A = (1 / self.nb_tasks) * A
             temp = np.kron(s.T, np.dot(alpha, hess))
             b = b + temp.reshape(-1, 1)
-            b = (1 / self.horizon) * b
+            b = (1 / self.nb_tasks) * b
             L = np.dot(np.linalg.inv(A + self.lbda * np.eye(k * d, k * d)), b)
             L = L.reshape(d, k)
 
