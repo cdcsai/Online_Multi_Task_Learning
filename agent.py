@@ -16,21 +16,17 @@ class Agent(object):
     def __init__(self):
 
         self.env = gym.make("State-Based-Navigation-2d-Map1-Goal1-v0")
+        self.render = False
         self.task1, self.task2, self.task3 = self.create_multitask_envs
         self.nb_tasks = 3
         self.discount = 0.9
-        self.alpha = 0.1
-        self.sigma = 0.5
-        self.learning_rate = 0.001
-        self.stepper = ConstantStep(self.learning_rate)
-        self.render = False
+        self.sigma = 0.8
+        self.learning_rate = 0.0001
         self.obs_space_shape = self.env.observation_space.shape[0]
         self.action_space_shape = self.env.action_space.shape[0]
         self.theta = np.random.randn(self.obs_space_shape)
-        self.alpha_dict = defaultdict(list)
-        self.hess_dict = defaultdict(list)
-        self.nb_episodes = 2
-        self.horizon = 30
+        self.nb_episodes = 10
+        self.horizon = 5
         self.lbda = 0.1
 
     @property
@@ -40,8 +36,12 @@ class Agent(object):
         env3 = deepcopy(self.env)
 
         env1.env.destination = np.array([20, 100])
-        env2.env.destination = np.array([100, 150])
+        env2.env.destination = np.array([300, 350])
         env3.env.destination = np.array([500, 500])
+        if self.render:
+            env1.render()
+            env2.render()
+            env3.render()
         return env1, env2, env3
 
     def collect_episodes(self, mdp, policy=None, horizon=None, n_episodes=1):
@@ -100,7 +100,7 @@ class Agent(object):
         The updated gradient
         """
 
-        return np.squeeze(np.outer(state, (np.linalg.norm(action, ord=2) - np.dot(theta.T, state)) / self.sigma ** 2))
+        return np.squeeze(np.outer(state, (action - np.dot(theta.T, state)) / self.sigma ** 2))
 
     def reinforce(self, paths):
         """
@@ -117,20 +117,21 @@ class Agent(object):
         """
 
         hess = 0
+        alpha = np.random.randn(self.obs_space_shape)
         # Theta update
         for episode in paths:
-            for t in range(1, self.horizon - 1):
-                self.theta += (self.discount ** t) * episode['rewards'][t] * \
-                              self.stepper.update(self.gaussian_grad(episode['actions'][t], episode['states'][t],
-                                                                     self.theta))
-                hess += np.outer(episode['states'][t], episode['states'][t].T) / self.sigma ** 2
-                self.theta = self.theta / self.nb_episodes
-                hess = hess / self.nb_episodes
-        alpha = self.theta
+            r = np.array([(self.discount ** t) * episode['rewards'][t] for t in range(self.horizon)])
+            g = np.array([self.gaussian_grad(episode['actions'][t],
+                                             episode['states'][t], alpha) for t in range(self.horizon)])
+            alpha += np.dot(r, g)
+            hess = sum([np.outer(episode['states'][t], episode['states'][t].T) for t in range(self.horizon)])
+            hess = hess / self.sigma ** 2
+        alpha = alpha / self.nb_episodes
+        hess = hess / self.nb_episodes
 
         return alpha, hess
 
-    def pg_ella(self) -> object:
+    def pg_ella(self, nb_itr=5):
 
         """
         Implementation of the online multi-task learning PG-ELLA algorithm.
@@ -154,45 +155,59 @@ class Agent(object):
         L = np.zeros((d, k))
         s = np.random.randn(k, 1)
         T = defaultdict(dict)
-        Q = [self.task1, self.task2, self.task3]
+        Q = {"task1": self.task1, "task2": self.task2, "task3": self.task3}
 
-        for task in Q:
+        for string, task in Q.items():
+            T[str(string)]["count"] = 0
+        for itr in range(nb_itr):
+            for string, task in Q.items():
 
-            if len(T[str(task)]) > 5:
-                break
+                if T[str(string)]["count"] > 5:
+                    break
 
-            if len(T[str(task)]) == 0:
-                random_policy = Policy(random=True)
-                paths = self.collect_episodes(task, policy=random_policy, horizon=self.horizon,
-                                              n_episodes=self.nb_episodes)
-            else:
-                hess = T[str(task)]["hess"]
-                alpha = T[str(task)]["alpha"]
+                if T[str(string)]["count"] == 0:
+                    random_policy = Policy(random=True)
+                    paths = self.collect_episodes(task, policy=random_policy, horizon=self.horizon,
+                                                  n_episodes=self.nb_episodes)
+                else:
+                    hess = T[str(string)]["hess"]
+                    alpha = T[str(string)]["alpha"]
+                    s = T[str(string)]["s"]
 
-                best_pol = Policy(alpha, self.sigma, self.action_space_shape)
-                paths = self.collect_episodes(task, policy=best_pol, horizon=self.horizon,
-                                              n_episodes=self.nb_episodes)
-                A = A - np.kron(np.dot(s, s.T), hess)
-                temp = np.kron(s.T, np.dot(alpha.T, hess))
-                b = b - temp.reshape(-1, 1)
+                    best_pol = Policy(alpha, self.sigma, self.action_space_shape)
+                    paths = self.collect_episodes(task, policy=best_pol, horizon=self.horizon,
+                                                  n_episodes=self.nb_episodes)
+                    A = A - np.kron(np.outer(s, s.T), hess)
+                    assert A.shape == (k * d, k * d)
+                    temp = np.kron(s.T, np.dot(alpha.T, hess))
+                    b = b - temp.reshape(-1, 1)
+                    assert b.shape == (k * d, 1)
 
-            alpha, hess = self.reinforce(paths)
+                new_alpha, new_hess = self.reinforce(paths)
+                T[str(string)]["hess"] = new_hess
+                T[str(string)]["alpha"] = new_alpha
 
-            L = reinitialize_zero_columns(L)
+                L = reinitialize_zero_columns(L)
+                fun = lambda x: loss(L, x, new_alpha, new_hess)
+                new_s = minimize(fun, s).x
+                new_s = np.expand_dims(new_s, 1)
+                T[str(string)]["s"] = new_s
+                assert new_s.shape == (k, 1)
+                A = A + np.kron(np.outer(new_s, new_s.T), new_hess)
+                A = (1 / self.nb_tasks) * A
+                assert A.shape == (k * d, k * d)
+                temp = np.kron(new_s.T, np.dot(new_alpha.T, new_hess))
+                b = b + temp.reshape(-1, 1)
+                b = (1 / self.nb_tasks) * b
+                assert b.shape == (k * d, 1)
+                L = np.dot(np.linalg.inv(A + self.lbda * np.eye(k * d, k * d)), b)
+                L = L.reshape(d, k)
+                theta_new = np.dot(L, new_s)
+                assert theta_new.shape == (d, 1)
+                T[str(string)]["theta"] = theta_new
+                T[str(string)]["count"] += 1
 
-            fun = lambda x: loss(L, x, alpha, hess)
-            s = minimize(fun, s).x
-            A = A + np.kron(np.outer(s, s.T), hess)
-            A = (1 / self.nb_tasks) * A
-            temp = np.kron(s.T, np.dot(alpha, hess))
-            b = b + temp.reshape(-1, 1)
-            b = (1 / self.nb_tasks) * b
-            L = np.dot(np.linalg.inv(A + self.lbda * np.eye(k * d, k * d)), b)
-            L = L.reshape(d, k)
-
-        theta_opt = np.dot(L, s)
-
-        return theta_opt
+        return T
 
 
 class Policy(object):
@@ -209,15 +224,6 @@ class Policy(object):
         else:
             assert state.shape == self.theta.shape
             return np.dot(self.theta.T, state) + self.sigma * np.random.randn(self.act_space)
-
-
-class ConstantStep(object):
-
-    def __init__(self, learning_rate):
-        self.learning_rate = learning_rate
-
-    def update(self, gt):
-        return self.learning_rate * gt
 
 
 if __name__ == "__main__":
