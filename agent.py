@@ -6,6 +6,7 @@ from scipy.optimize import minimize
 from copy import deepcopy
 import copy
 from tqdm import tqdm
+from parameters import parameters
 from collections import defaultdict
 
 
@@ -14,22 +15,20 @@ class Agent(object):
     Online Learner able to learn efficiently several tasks.
     """
 
-    def __init__(self):
+    def __init__(self, n_iter, nb_episodes, horizon):
 
-        self.env = gym.make("State-Based-Navigation-2d-Map1-Goal1-v0")
-        self.render = False
-        self.task1, self.task2, self.task3 = self.create_multitask_envs
-        self.n_iter = 10
-        self.nb_tasks = 3
+        self.env = gym.make(parameters["env_name2"])
+        self.n_iter = n_iter
+        self.nb_tasks = 2
         self.discount = 0.9
-        self.sigma = 3
-        self.learning_rate = 0.01
+        self.sigma = 0.2
+        self.learning_rate = 1
         self.obs_space_shape = self.env.observation_space.shape[0]
         self.action_space_shape = self.env.action_space.shape[0]
         self.theta1 = np.random.randn(self.obs_space_shape)
         self.theta2 = np.random.randn(self.obs_space_shape)
-        self.nb_episodes = 600
-        self.horizon = 50
+        self.nb_episodes = nb_episodes
+        self.horizon = horizon
         self.lbda = 0.1
 
     @property
@@ -41,10 +40,7 @@ class Agent(object):
         env1.env.destination = np.array([20, 100])
         env2.env.destination = np.array([300, 350])
         env3.env.destination = np.array([500, 500])
-        if self.render:
-            env1.render()
-            env2.render()
-            env3.render()
+
         return env1, env2, env3
 
     def collect_episodes(self, mdp, policy=None, horizon=None, n_episodes=1, render=False):
@@ -52,17 +48,15 @@ class Agent(object):
         """
         Takes a Markov Decision Process in input and returns the collected actions, rewards and observations of the
         simulation.
-
         Parameters:
         mdp -- Markov Decision Process (or environment)
-
         Returns:
         paths -- the collected path in a dictionnary form
         """
 
         paths = []
 
-        for _ in range(n_episodes):
+        for j in range(n_episodes):
             observations = []
             actions = []
             rewards = []
@@ -71,7 +65,7 @@ class Agent(object):
             state = mdp.reset()
             # state = state.reshape(-1, 1)
 
-            for _ in range(horizon):
+            for i in range(horizon):
                 action = policy.draw_action(state, mdp)
                 next_state, reward, terminal, _ = mdp.step(action)
                 if render:
@@ -95,10 +89,8 @@ class Agent(object):
     def gaussian_grad(self, action, state, theta):
         """
         Compute the gradient of the gaussian policy. Used in the reinforce policy gradient method.
-
         Parameters:
         current action, current state, current theta
-
         Returns:
         The updated gradient
         """
@@ -108,12 +100,10 @@ class Agent(object):
     def reinforce(self, paths, x=True):
         """
         Implementation of the policy gradient method episodic REINFORCE.
-
         Parameters:
         n_itr: number of gradient ascent updates
         N : number of trajectory/episode
         T : length of each trajectory/episode
-
         Returns:
         alpha: the current optimum value of theta, argmin of J(theta)
         hess: the estimate of the hessian used in the PG-ELLA algorithm
@@ -122,10 +112,10 @@ class Agent(object):
         hess = 0
         alpha = np.random.randn(self.obs_space_shape)
         # Theta update
+        R = []
         for episode in paths:
             r = np.array([(self.discount ** t) * episode['rewards'][t] for t in range(self.horizon)])
-            print(r)
-
+            R.append(r)
             if x:
                 g = np.array([self.gaussian_grad(episode['actions'][t][0],
                                                  episode['states'][t], alpha) for t in range(self.horizon)])
@@ -133,20 +123,20 @@ class Agent(object):
             else:
                 g = np.array([self.gaussian_grad(episode['actions'][t][1],
                                                      episode['states'][t], alpha) for t in range(self.horizon)])
-
-            alpha += np.dot(r, g)
+            g = g*self.learning_rate
+            #lr = np.repeat(self.learning_rate, self.horizon)
+            alpha -= np.dot(r, g)
             hess = sum([np.outer(episode['states'][t], episode['states'][t].T) for t in range(self.horizon)])
             hess = hess / self.sigma ** 2
-        alpha = -(alpha / self.nb_episodes)
-        hess = hess / self.nb_episodes
-
+        alpha = (alpha / self.nb_episodes)
+        hess = -(hess / self.nb_episodes)
+        print("Average Return:", np.mean(R))
         return alpha, hess
 
     def pg_ella(self):
 
         """
         Implementation of the online multi-task learning PG-ELLA algorithm.
-
         Parameters:
         k: dimension of the vector s
         d: dimension of the vector theta
@@ -155,7 +145,6 @@ class Agent(object):
         alpha: current optimum computed with REINFORCE algorithm
         hess: current hessian computed with REINFORCE algorithm
         nb_iter: number of iterations of the algorithm
-
         Returns:
         theta_opt: the optimal learned policy
         """
@@ -167,19 +156,15 @@ class Agent(object):
         s = np.random.randn(k, 1)
         T1 = defaultdict(dict)
         T2 = defaultdict(dict)
-        Q = {"task1_x": self.task1, "task1_y": self.task1, "task2_x": self.task2, "task2_y": self.task2,
-             "task3_x": self.task3, "task3_y": self.task3}
+        Q = {"task1_x": self.env, "task1_y": self.env}
 
         for string, task in Q.items():
             T1[str(string)]["count"] = 0
             T2[str(string)]["count"] = 0
 
         for itr in range(self.n_iter):
+            print("iteration {}".format(itr+1))
             for i, (string, task) in zip(range(1, len(Q)+1), Q.items()):
-
-                if T1[str(string)]["count"] > 5 or T2[str(string)]["count"] > 5:
-                    break
-
                 if T1[str(string)]["count"] == 0 or T2[str(string)]["count"] == 0:
                     random_policy = Policy(random=True)
                     paths = self.collect_episodes(task, policy=random_policy, horizon=self.horizon,
@@ -256,73 +241,43 @@ class Agent(object):
 
         return T1, T2
 
-    def reinforce_w_pg_ella(self, task=1):
+    def reinforce_w_pg_ella(self):
         """
-
         :param task:
         :return:
         """
         T1, T2 = self.pg_ella()
-        if task == 1:
-            best_theta1, best_theta2 = T1["task1_x"]["theta1"], T2["task1_y"]["theta2"]
-            best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task1, policy=best_pol, horizon=self.horizon,
-                                      n_episodes=self.nb_episodes, render=True)
-
-        elif task == 2:
-            best_theta1, best_theta2 = T1["task2_x"]["theta1"], T2["task2_y"]["theta2"]
-            best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task2, policy=best_pol, horizon=self.horizon,
-                                  n_episodes=self.nb_episodes, render=True)
-
-        else:
-            best_theta1, best_theta2 = T1["task3_x"]["theta1"], T2["task3_y"]["theta2"]
-            best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task3, policy=best_pol, horizon=self.horizon,
-                                  n_episodes=self.nb_episodes, render=True)
-
-    def reinforce_wo_pg_ella(self, task=2):
-        """
-        :param task:
-        :return:
-        """
-        if task == 1:
-            random_policy = Policy(random=True)
-            paths = self.collect_episodes(self.task1, policy=random_policy, horizon=self.horizon,
-                                          n_episodes=self.nb_episodes)
-
-            best_theta1, best_theta2 = self.reinforce(paths, x=True)[0], self.reinforce(paths, x=False)[1]
-            best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task1, policy=best_pol, horizon=self.horizon,
-                                          n_episodes=self.nb_episodes, render=True)
-        elif task == 2:
-            random_policy = Policy(random=True)
-            paths = self.collect_episodes(self.task2, policy=random_policy, horizon=self.horizon,
-                                          n_episodes=self.nb_episodes)
-            best_theta1, best_theta2 = self.reinforce(paths, x=True)[0], self.reinforce(paths, x=False)[1]
-            best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task2, policy=best_pol, horizon=self.horizon,
-                                  n_episodes=self.nb_episodes, render=True)
-
-        else:
-            random_policy = Policy(random=True)
-            paths = self.collect_episodes(self.task3, policy=random_policy, horizon=self.horizon,
-                                          n_episodes=self.nb_episodes)
-            best_theta1, best_theta2 = self.reinforce(paths, x=True)[0], self.reinforce(paths, x=False)[1]
-            best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-            self.collect_episodes(self.task3, policy=best_pol, horizon=self.horizon,
-                                  n_episodes=self.nb_episodes, render=True)
+        best_theta1, best_theta2 = T1["task1_x"]["theta1"], T2["task1_y"]["theta2"]
+        best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
+        self.collect_episodes(self.env, policy=best_pol, horizon=600,
+                                      n_episodes=1, render=True)
 
 
 class Policy(object):
+    """
+    Policy class
+    """
 
     def __init__(self, theta1=None, theta2=None, sigma=None, random=False):
+        """
+
+        :param theta1:
+        :param theta2:
+        :param sigma:
+        :param random:
+        """
         self.random = random
         self.theta1 = theta1
         self.theta2 = theta2
         self.sigma = sigma
 
     def draw_action(self, state, env):
+        """
+
+        :param state:
+        :param env:
+        :return:
+        """
         if self.random:
             return env.action_space.sample()
         else:
@@ -332,6 +287,8 @@ class Policy(object):
 
 
 if __name__ == "__main__":
-    ag = Agent()
-    #ag.reinforce_w_pg_ella()
-    ag.reinforce_wo_pg_ella()
+    np.random.seed(35)
+    ag = Agent(3, 3, 500)
+    ag.reinforce_w_pg_ella()
+
+
