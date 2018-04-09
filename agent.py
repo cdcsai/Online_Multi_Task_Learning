@@ -278,17 +278,3 @@ class Policy(object):
             action = np.dot(self.actions_dict["alpha"].T, state) + self.sigma * np.random.randn()
             action = cap_action(action)  # Cap the action between - 1 and 1
             return action
-
-
-# - Stacker toutes les trajectoires et apprendre alpha, hess, s, A, b et L sur cette longue séquence d’évènements ou
-# sélectionner successivement chacune des trajectoires et pour chacune d’elle calculer alpha, hess,
-# puis mettre à jour s, A, b et L
-
-# - Pour une tâche déjà rencontrée, on va resimuler le même nombre de trajectoires.
-# Il faudrait, pour chacune d’elle, repartir de la trajectoire simulée la dernière fois que la tâce a été rencontrée
-# (la première trajectoire de notre seconde tâche i va partir du dernier state, et simuler sur tout son
-# horizon selon le alpha estimé, de la première trajectoire de notre première tâche i)
-
-
-
-
