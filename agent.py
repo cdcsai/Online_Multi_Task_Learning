@@ -1,11 +1,10 @@
 import numpy as np
-from utils import reinitialize_zero_columns, discounted_r, loss, hess_norm
+from utils import *
 import gym
-from gym_extensions.continuous import gym_navigation_2d
 from scipy.optimize import minimize
-from copy import deepcopy
-import copy
+from utils import stringer
 from tqdm import tqdm
+import copy
 from parameters import parameters
 from collections import defaultdict
 
@@ -16,37 +15,30 @@ class Agent(object):
     """
 
     def __init__(self, n_iter, nb_episodes, horizon):
+        """
 
-        self.env = gym.make(parameters["env_name2"])
-        self.n_iter = n_iter
-        self.nb_tasks = 2
-        self.discount = 0.9
-        self.sigma = 0.2
-        self.learning_rate = 1
+        :param n_iter: number of reinforce iteration for the gradient ascent of the reinforce algorithm
+        :param nb_episodes: number of trajectories simulated to compute the expectation
+        :param horizon: maximal length of each trajectory
+        """
+
+        self.env = gym.make(parameters["env_name"])  # Open AI gym environment
+        self.n_iter = n_iter # Nb of iteration of the PG-ELLA for each task
+        self.nb_tasks = 2  # Number of tasks
+        self.discount = 0.99  # Discount rate
+        self.sigma = 0.4  # Variance for the Gaussian stochastic policy
+        self.learning_rate = 1e-8  # Learning rate for the gradient ascent
         self.obs_space_shape = self.env.observation_space.shape[0]
         self.action_space_shape = self.env.action_space.shape[0]
-        self.theta1 = np.random.randn(self.obs_space_shape)
-        self.theta2 = np.random.randn(self.obs_space_shape)
         self.nb_episodes = nb_episodes
         self.horizon = horizon
         self.lbda = 0.1
+        self.mu = 0.5  # The L1-penalization hyperparameter for s
 
-    @property
-    def create_multitask_envs(self):
-        env1 = deepcopy(self.env)
-        env2 = deepcopy(self.env)
-        env3 = deepcopy(self.env)
-
-        env1.env.destination = np.array([20, 100])
-        env2.env.destination = np.array([300, 350])
-        env3.env.destination = np.array([500, 500])
-
-        return env1, env2, env3
-
-    def collect_episodes(self, mdp, policy=None, horizon=None, n_episodes=1, render=False):
-
+    def collect_episodes(self, mdp, policy=None, horizon=None, n_episodes=1, render=False, index=None,
+                         other_value=None, test=False):
         """
-        Takes a Markov Decision Process in input and returns the collected actions, rewards and observations of the
+        Takes an environment in input and returns the collected actions, rewards and observations of the
         simulation.
         Parameters:
         mdp -- Markov Decision Process (or environment)
@@ -55,21 +47,28 @@ class Agent(object):
         """
 
         paths = []
+        action_old = other_value  # Given that we have two tasks (the two actions), we have to fix one each time to
+        # only learn the one we are interested in
 
         for j in range(n_episodes):
             observations = []
             actions = []
             rewards = []
             next_states = []
-
             state = mdp.reset()
-            # state = state.reshape(-1, 1)
 
             for i in range(horizon):
-                action = policy.draw_action(state, mdp)
+                if test:
+                    action = policy.draw_action(state, mdp)  # At test time, we want to draw the two actions at the
+                    # same time
+                else:
+                    if index == 0:  # index corresponding to the first task
+                        action = np.array([policy.draw_action(state, mdp), action_old])  # We fix the other task
+                    else:
+                        action = np.array([action_old, policy.draw_action(state, mdp)])  # Same for the second task
                 next_state, reward, terminal, _ = mdp.step(action)
                 if render:
-                    mdp.render()
+                    mdp.render()  # To visualise the learned policy at test time
                 observations.append(state)
                 actions.append(action)
                 rewards.append(reward)
@@ -82,7 +81,8 @@ class Agent(object):
                 states=np.array(observations),
                 actions=np.array(actions),
                 rewards=np.array(rewards),
-                next_states=np.array(next_states)
+                next_states=np.array(next_states),
+                average_reward=np.mean(rewards)
             ))
         return paths
 
@@ -97,198 +97,198 @@ class Agent(object):
 
         return np.squeeze(np.dot(state, (action - np.dot(theta.T, state)) / self.sigma ** 2))
 
-    def reinforce(self, paths, x=True):
+    def reinforce(self, paths, index, nb_iter=100):
         """
         Implementation of the policy gradient method episodic REINFORCE.
+
         Parameters:
-        n_itr: number of gradient ascent updates
-        N : number of trajectory/episode
-        T : length of each trajectory/episode
+        paths: the collected episodes
+        index: the index for whether to update the task 0 or 1
         Returns:
+
         alpha: the current optimum value of theta, argmin of J(theta)
         hess: the estimate of the hessian used in the PG-ELLA algorithm
         """
 
-        hess = 0
-        alpha = np.random.randn(self.obs_space_shape)
-        # Theta update
-        R = []
-        for episode in paths:
-            r = np.array([(self.discount ** t) * episode['rewards'][t] for t in range(self.horizon)])
-            R.append(r)
-            if x:
-                g = np.array([self.gaussian_grad(episode['actions'][t][0],
-                                                 episode['states'][t], alpha) for t in range(self.horizon)])
+        theta = np.random.randn(self.obs_space_shape)  # Initialize theta at random each time
+        if index == 0:
+            grad = lambda theta: - np.mean([(self.discount ** t) * episode['rewards'][t]
+                                            * self.gaussian_grad(episode['actions'][t][0],
+                                            episode['states'][t], theta) for t in range(self.horizon)
+                                            for episode in paths])  # Corresponding to the gradient in 5.1 (article)
+        # Note that the authors forgot to multiply by the state when computing the gradient of the Gaussian density
+        else:
+            grad = lambda theta: - np.mean([(self.discount ** t) * episode['rewards'][t]
+                                            * self.gaussian_grad(episode['actions'][t][1],
+                                            episode['states'][t], theta) for t in range(self.horizon)
+                                            for episode in paths])
+        for itr in range(nb_iter):
+            theta += self.learning_rate * grad(theta)  # Gradient ascent to compute the best theta (alpha)
 
-            else:
-                g = np.array([self.gaussian_grad(episode['actions'][t][1],
-                                                     episode['states'][t], alpha) for t in range(self.horizon)])
-            g = g*self.learning_rate
-            #lr = np.repeat(self.learning_rate, self.horizon)
-            alpha -= np.dot(r, g)
-            hess = sum([np.outer(episode['states'][t], episode['states'][t].T) for t in range(self.horizon)])
-            hess = hess / self.sigma ** 2
-        alpha = (alpha / self.nb_episodes)
-        hess = -(hess / self.nb_episodes)
-        print("Average Return:", np.mean(R))
+        hess = np.mean([(1 / self.sigma) * np.outer(episode['states'][t], episode['states'][t].T)
+                        for t in range(self.horizon) for episode in paths], axis=0)  # Computing the hessian matrix
+        # Following the formula in 5.1 from the authors
+        alpha = theta
+
         return alpha, hess
 
     def pg_ella(self):
-
         """
         Implementation of the online multi-task learning PG-ELLA algorithm.
         Parameters:
-        k: dimension of the vector s
-        d: dimension of the vector theta
-        s: (sparse) task-specific vector of coefficients
-        lmbda: L1 penalization for matrix L hyper-parameter
-        alpha: current optimum computed with REINFORCE algorithm
-        hess: current hessian computed with REINFORCE algorithm
-        nb_iter: number of iterations of the algorithm
+
         Returns:
-        theta_opt: the optimal learned policy
+        T: a dictionnary filled with the parameters corresponding to the optimal stochastic policy
         """
+        # Initialization of all the parameters
+
         d = self.obs_space_shape
         k = self.nb_tasks
         A = np.zeros((k * d, k * d))
         b = np.zeros((k * d, 1))
         L = np.zeros((d, k))
         s = np.random.randn(k, 1)
-        T1 = defaultdict(dict)
-        T2 = defaultdict(dict)
-        Q = {"task1_x": self.env, "task1_y": self.env}
+        T = defaultdict(dict)
+        env = self.env
+
+        # The two tasks in this environment correspond to [main engine, left-right engines].
+        # Main engine: -1..0 off, 0..+1 throttle from 50% to 100% power. Engine can't work with less than 50% power.
+        # Left-right:  -1.0..-0.5 fire left engine, +0.5..+1.0 fire right engine, -0.5..0.5 off
+
+        Q = {"task1_x": env, "task1_y": env}
 
         for string, task in Q.items():
-            T1[str(string)]["count"] = 0
-            T2[str(string)]["count"] = 0
+            T[string]["count"] = 0  # Number of iteration for each task
+            T[string]["last_value"] = 0  # Keeping the last value of the action
+            # to keep it fixed while training the other
+            if "x" in string:
+                T[string]["index"] = 0
+            else:
+                T[string]["index"] = 1
 
-        for itr in range(self.n_iter):
-            print("iteration {}".format(itr+1))
-            for i, (string, task) in zip(range(1, len(Q)+1), Q.items()):
-                if T1[str(string)]["count"] == 0 or T2[str(string)]["count"] == 0:
-                    random_policy = Policy(random=True)
+        for itr in tqdm(range(self.n_iter)):
+            for string, task in Q.items():  # Looping over the tasks
+                string_ = stringer(string)  # string_ is the other task
+
+                if T[str(string)]["count"] == 0:  # Corresponds to if isNewTask in the algorithm
+                    random_policy = Policy(T[string], random=True) # Runing a random policy
                     paths = self.collect_episodes(task, policy=random_policy, horizon=self.horizon,
-                                                  n_episodes=self.nb_episodes)
+                                                  n_episodes=self.nb_episodes, index=T[string]["index"],
+                                                      other_value=T[string_]["last_value"])  # Collecting Trajectories
+                    T[string]["last_value"] = paths[-1]["actions"][-1][T[string]["index"]]  # Saving the last value
                 else:
-                    hess = T1[str(string)]["hess"]
-                    alpha1 = T1[str(string)]["alpha1"]
-                    alpha2 = T2[str(string)]["alpha2"]
-                    s1 = T1[str(string)]["s1"]
-                    s2 = T2[str(string)]["s2"]
-                    best_pol = Policy(alpha1, alpha2, self.sigma, self.action_space_shape)
+                    hess = T[string]["hess"]  # If the task was already trained, we retrieve the hessian, alpha and s
+                    alpha = T[str(string)]["alpha"]
+                    s = T[str(string)]["s"]
+
+                    best_pol = Policy(T[string], self.sigma)  # The best policy using the last learned parameters
                     paths = self.collect_episodes(task, policy=best_pol, horizon=self.horizon,
-                                                  n_episodes=self.nb_episodes)
+                                                      n_episodes=self.nb_episodes, index=T[string]["index"],
+                                                      other_value=T[string_]["last_value"])  # Collecting the episodes
 
-                    if i % 2 != 0:
-                        s = deepcopy(s1)
-                        alpha = deepcopy(alpha1)
-                    else:
-                        s = deepcopy(s2)
-                        alpha = deepcopy(alpha2)
+                    print("Average Reward for iteration {} and taks {}".format(itr, string[-1]),
+                    np.mean([episode['average_reward'] for episode in paths]))
 
-                    A = A - np.kron(np.outer(s, s.T), hess)
+                    T[string]["last_value"] = paths[-1]["actions"][-1][T[string]["index"]]  # Updating the
+                    # last action value
+                    A = A - np.kron(np.dot(s, s.T), hess)
                     assert A.shape == (k * d, k * d)
                     temp = np.kron(s.T, np.dot(alpha.T, hess))
                     b = b - temp.reshape(-1, 1)
                     assert b.shape == (k * d, 1)
 
-                if i % 2 != 0:
-                    new_alpha1, new_hess = self.reinforce(paths, x=True)
-                    T1[str(string)]["hess"] = new_hess
-                    T1[str(string)]["alpha1"] = new_alpha1
-                    L = reinitialize_zero_columns(L)
-                    fun = lambda x: loss(L, x, new_alpha1, new_hess)
-                    new_s1 = minimize(fun, s).x
-                    new_s1 = np.expand_dims(new_s1, 1)
-                    T1[str(string)]["s1"] = new_s1
-                    assert new_s1.shape == (k, 1)
-                    A = A + np.kron(np.outer(new_s1, new_s1.T), new_hess)
-                    A = (1 / self.nb_tasks) * A
-                    assert A.shape == (k * d, k * d)
-                    temp = np.kron(new_s1.T, np.dot(new_alpha1.T, new_hess))
-                    b = b + temp.reshape(-1, 1)
-                    b = (1 / self.nb_tasks) * b
-                    assert b.shape == (k * d, 1)
-                    L = np.dot(np.linalg.inv(A + self.lbda * np.eye(k * d, k * d)), b)
-                    L = L.reshape(d, k)
-                    theta1_new = np.dot(L, new_s1)
-                    assert theta1_new.shape == (d, 1)
-                    T1[str(string)]["theta1"] = theta1_new
-                    T1[str(string)]["count"] += 1
-
-                else:
-                    new_alpha2, new_hess = self.reinforce(paths, x=False)
-                    T2[str(string)]["alpha2"] = new_alpha2
-                    L = reinitialize_zero_columns(L)
-                    fun = lambda x: loss(L, x, new_alpha2, new_hess)
-                    new_s2 = minimize(fun, s).x
-                    new_s2 = np.expand_dims(new_s2, 1)
-                    T2[str(string)]["s2"] = new_s2
-                    assert new_s2.shape == (k, 1)
-                    A = A + np.kron(np.outer(new_s2, new_s2.T), new_hess)
-                    A = (1 / self.nb_tasks) * A
-                    assert A.shape == (k * d, k * d)
-                    temp = np.kron(new_s2.T, np.dot(new_alpha2.T, new_hess))
-                    b = b + temp.reshape(-1, 1)
-                    b = (1 / self.nb_tasks) * b
-                    assert b.shape == (k * d, 1)
-                    L = np.dot(np.linalg.inv(A + self.lbda * np.eye(k * d, k * d)), b)
-                    L = L.reshape(d, k)
-                    theta2_new = np.dot(L, new_s2)
-                    assert theta2_new.shape == (d, 1)
-                    T2[str(string)]["theta2"] = theta2_new
-                    T2[str(string)]["count"] += 1
-
-        return T1, T2
+                new_alpha, new_hess = self.reinforce(paths, T[string]["index"])  # Computing alpha and hessian with
+                # REINFORCE algorithm
+                T[str(string)]["hess"] = new_hess  # Updating the parameters
+                T[str(string)]["alpha"] = new_alpha
+                new_alpha = np.expand_dims(new_alpha, 1)
+                L = reinitialize_zero_columns(L)
+                fun = lambda x: loss(L, x, new_alpha, new_hess, self.mu)
+                new_s = minimize(fun, s).x  # Using scipy minimize to find the best s
+                new_s = np.expand_dims(new_s, 1)
+                T[str(string)]["s"] = new_s
+                assert new_s.shape == (k, 1)
+                A = A + np.kron(np.outer(new_s, new_s.T), new_hess)
+                A = (1 / self.nb_tasks) * A
+                assert A.shape == (k * d, k * d)
+                temp = np.kron(new_s.T, np.dot(new_alpha.T, new_hess))
+                b = b + temp.reshape(-1, 1)
+                b = (1 / self.nb_tasks) * b
+                assert b.shape == (k * d, 1)
+                L = np.dot(np.linalg.inv(A + self.lbda * np.eye(k * d, k * d)), b)
+                L = L.reshape(d, k)
+                theta_new = np.dot(L, new_s)
+                theta_new = np.squeeze(theta_new)  # Computing the new theta for this task/action
+                assert theta_new.shape == (d,)
+                T[str(string)]["theta"] = theta_new
+                T[str(string)]["count"] += 1
+        return T
 
     def reinforce_w_pg_ella(self):
         """
-        :param task:
-        :return:
+        Function used to visualize the effectiveness of the learning process
         """
-        T1, T2 = self.pg_ella()
-        best_theta1, best_theta2 = T1["task1_x"]["theta1"], T2["task1_y"]["theta2"]
-        best_pol = Policy(best_theta1, best_theta2, self.sigma, self.action_space_shape)
-        self.collect_episodes(self.env, policy=best_pol, horizon=600,
-                                      n_episodes=1, render=True)
+
+        T = self.pg_ella()
+        best_pol = Policy(T, self.sigma, test=True)
+        self.collect_episodes(self.env, policy=best_pol, horizon=150,
+                                      n_episodes=10, render=True, test=True)
+        self.env.close()
 
 
 class Policy(object):
     """
-    Policy class
+    Policy class with draw_action method to sample actions with the current stochastic policy.
     """
 
-    def __init__(self, theta1=None, theta2=None, sigma=None, random=False):
+    def __init__(self, actions_dict=None, sigma=None, random=False, test=False):
+        """
+        :param actions_dict: the dictionnary filled with the parameters
+        :param sigma: the variance needed for the Gaussian policy
+        :param random: to get random episodes
+        :param test: if test is true, we want to use both best parameters for the first and second task
         """
 
-        :param theta1:
-        :param theta2:
-        :param sigma:
-        :param random:
-        """
         self.random = random
-        self.theta1 = theta1
-        self.theta2 = theta2
         self.sigma = sigma
+        self.actions_dict = actions_dict
+        self.test = test
 
-    def draw_action(self, state, env):
+    def draw_action(self, state, env, ):
+        """
+        Takes as input the current state and the environment.
+        Parameters:
+        state -- the current state
+        env -- the current environment
+
+        Returns:
+        action -- the sampled action resulting from the current parametric stochastic policy
         """
 
-        :param state:
-        :param env:
-        :return:
-        """
+        if self.test:
+            action_x = np.dot(self.actions_dict["task1_x"]["theta"].T, state) + self.sigma * np.random.randn()
+            action_x = cap_action(action_x) # Cap the action between - 1 and 1
+            action_y = np.dot(self.actions_dict["task1_y"]["theta"].T, state) + self.sigma * np.random.randn()
+            action_y = cap_action(action_y)
+            return np.array([action_x, action_y])
         if self.random:
-            return env.action_space.sample()
+            action = env.action_space.sample()[self.actions_dict["index"]]
+            return action
         else:
-            action_x = np.dot(self.theta1.T, state) + self.sigma * np.random.randn()
-            action_y = np.dot(self.theta2.T, state) + self.sigma * np.random.randn()
-            return action_x, action_y
+            action = np.dot(self.actions_dict["alpha"].T, state) + self.sigma * np.random.randn()
+            action = cap_action(action)  # Cap the action between - 1 and 1
+            return action
 
 
-if __name__ == "__main__":
-    np.random.seed(35)
-    ag = Agent(3, 3, 500)
-    ag.reinforce_w_pg_ella()
+# - Stacker toutes les trajectoires et apprendre alpha, hess, s, A, b et L sur cette longue séquence d’évènements ou
+# sélectionner successivement chacune des trajectoires et pour chacune d’elle calculer alpha, hess,
+# puis mettre à jour s, A, b et L
+
+# - Pour une tâche déjà rencontrée, on va resimuler le même nombre de trajectoires.
+# Il faudrait, pour chacune d’elle, repartir de la trajectoire simulée la dernière fois que la tâce a été rencontrée
+# (la première trajectoire de notre seconde tâche i va partir du dernier state, et simuler sur tout son
+# horizon selon le alpha estimé, de la première trajectoire de notre première tâche i)
+
+
 
 

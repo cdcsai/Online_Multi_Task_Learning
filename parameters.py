@@ -1,4 +1,6 @@
-parameters = {"env_name1": "State-Based-Navigation-2d-Map1-Goal1-v0",
-              "env_name2": "LunarLanderContinuous-v2"}
+parameters = {"env_name": "LunarLanderContinuous-v2",
+              "n_iter": 3,
+              "nb_episodes": 100,
+              "horizon": 20}
 
 
