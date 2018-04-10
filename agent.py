@@ -17,13 +17,13 @@ class Agent(object):
     def __init__(self, n_iter, nb_episodes, horizon):
         """
 
-        :param n_iter: number of reinforce iteration for the gradient ascent of the reinforce algorithm
+        :param n_iter: number of pg-ella iteration for each task
         :param nb_episodes: number of trajectories simulated to compute the expectation
         :param horizon: maximal length of each trajectory
         """
 
         self.env = gym.make(parameters["env_name"])  # Open AI gym environment
-        self.n_iter = n_iter # Nb of iteration of the PG-ELLA for each task
+        self.n_iter = n_iter  # Nb of iteration of the PG-ELLA for each task
         self.nb_tasks = 2  # Number of tasks
         self.discount = 0.99  # Discount rate
         self.sigma = 0.4  # Variance for the Gaussian stochastic policy
@@ -33,7 +33,7 @@ class Agent(object):
         self.nb_episodes = nb_episodes
         self.horizon = horizon
         self.lbda = 0.1
-        self.mu = 0.5  # The L1-penalization hyperparameter for s
+        self.mu = 0.5  # The L1-penalization hyper-parameter for s
 
     def collect_episodes(self, mdp, policy=None, horizon=None, n_episodes=1, render=False, index=None,
                          other_value=None, test=False):
